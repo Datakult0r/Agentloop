@@ -11,6 +11,7 @@ AUTORESEARCH_DATASET or by running this script with --dataset.
 """
 
 import argparse
+import json
 import math
 import os
 import pickle
@@ -37,6 +38,10 @@ SPLIT_PATTERN = r"""'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,2}| 
 
 SPECIAL_TOKENS = [f"<|reserved_{i}|>" for i in range(4)]
 BOS_TOKEN = "<|reserved_0|>"
+BYTE_VOCAB_SIZE = 256
+TOKENIZER_CONFIG_FILENAME = "tokenizer_config.json"
+DEFAULT_TOKENIZER_MODE = "byte" if os.name == "nt" else "bpe"
+TOKENIZER_MODE_CHOICES = ("auto", "byte", "bpe")
 
 # ---------------------------------------------------------------------------
 # Dataset + cache configuration
@@ -141,6 +146,44 @@ def _data_dir(dataset_name=None):
 
 def _tokenizer_dir(dataset_name=None):
     return os.path.join(_dataset_root(dataset_name), "tokenizer")
+
+
+def _tokenizer_config_path(dataset_name=None):
+    return os.path.join(_tokenizer_dir(dataset_name), TOKENIZER_CONFIG_FILENAME)
+
+
+def _normalize_tokenizer_mode(tokenizer_mode):
+    if tokenizer_mode is None:
+        return None
+    value = tokenizer_mode.strip().lower()
+    if value not in TOKENIZER_MODE_CHOICES:
+        raise ValueError(f"Unknown tokenizer mode '{tokenizer_mode}'. Expected one of {TOKENIZER_MODE_CHOICES}.")
+    return value
+
+
+def _resolve_tokenizer_mode(tokenizer_mode=None):
+    normalized = _normalize_tokenizer_mode(tokenizer_mode)
+    if normalized not in (None, "auto"):
+        return normalized
+
+    env_value = os.environ.get("AUTORESEARCH_TOKENIZER")
+    env_mode = _normalize_tokenizer_mode(env_value) if env_value is not None else None
+    if env_mode not in (None, "auto"):
+        return env_mode
+
+    return DEFAULT_TOKENIZER_MODE
+
+
+def _write_tokenizer_config(tokenizer_dir, dataset_name, mode, vocab_size):
+    config = {
+        "dataset": dataset_name,
+        "mode": mode,
+        "vocab_size": vocab_size,
+        "bos_token_id": BYTE_VOCAB_SIZE if mode == "byte" else None,
+    }
+    with open(os.path.join(tokenizer_dir, TOKENIZER_CONFIG_FILENAME), "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+        f.write("\n")
 
 
 def _tiny_parquet_path(dataset_name=None):
@@ -281,13 +324,14 @@ def text_iterator(dataset_name=None, max_chars=1_000_000_000, doc_cap=10_000):
             return
 
 
-def train_tokenizer(dataset_name=None):
+def _train_bpe_tokenizer(dataset_name):
     dataset = _resolve_dataset_name(dataset_name)
     tokenizer_dir = _tokenizer_dir(dataset)
     tokenizer_pkl = os.path.join(tokenizer_dir, "tokenizer.pkl")
     token_bytes_path = os.path.join(tokenizer_dir, "token_bytes.pt")
+    config_path = _tokenizer_config_path(dataset)
 
-    if os.path.exists(tokenizer_pkl) and os.path.exists(token_bytes_path):
+    if os.path.exists(tokenizer_pkl) and os.path.exists(token_bytes_path) and os.path.exists(config_path):
         print(f"Tokenizer: already trained at {tokenizer_dir}")
         return
 
@@ -337,6 +381,7 @@ def train_tokenizer(dataset_name=None):
     token_bytes_tensor = torch.tensor(token_bytes_list, dtype=torch.int32)
     torch.save(token_bytes_tensor, token_bytes_path)
     print(f"Tokenizer: saved token_bytes to {token_bytes_path}")
+    _write_tokenizer_config(tokenizer_dir, dataset, mode="bpe", vocab_size=enc.n_vocab)
 
     with open(os.path.join(tokenizer_dir, "dataset.txt"), "w", encoding="utf-8") as f:
         f.write(dataset + "\n")
@@ -348,6 +393,49 @@ def train_tokenizer(dataset_name=None):
     print(f"Tokenizer: sanity check passed (vocab_size={enc.n_vocab})")
 
 
+def _build_byte_tokenizer(dataset_name):
+    dataset = _resolve_dataset_name(dataset_name)
+    tokenizer_dir = _tokenizer_dir(dataset)
+    token_bytes_path = os.path.join(tokenizer_dir, "token_bytes.pt")
+    config_path = _tokenizer_config_path(dataset)
+    vocab_size = BYTE_VOCAB_SIZE + len(SPECIAL_TOKENS)
+
+    if os.path.exists(token_bytes_path) and os.path.exists(config_path):
+        print(f"Tokenizer: already prepared at {tokenizer_dir}")
+        return
+
+    os.makedirs(tokenizer_dir, exist_ok=True)
+    print(f"Tokenizer: building byte tokenizer ({dataset})...")
+    t0 = time.time()
+
+    token_bytes_tensor = torch.ones(vocab_size, dtype=torch.int32)
+    token_bytes_tensor[BYTE_VOCAB_SIZE:] = 0
+    torch.save(token_bytes_tensor, token_bytes_path)
+    _write_tokenizer_config(tokenizer_dir, dataset, mode="byte", vocab_size=vocab_size)
+
+    with open(os.path.join(tokenizer_dir, "dataset.txt"), "w", encoding="utf-8") as f:
+        f.write(dataset + "\n")
+
+    tokenizer = Tokenizer(enc=None, dataset=dataset, mode="byte")
+    test = "Hello world! Numbers: 123. Unicode: 你好"
+    encoded = tokenizer.encode(test)
+    decoded = tokenizer.decode(encoded)
+    assert decoded == test, f"Tokenizer roundtrip failed: {test!r} -> {decoded!r}"
+
+    t1 = time.time()
+    print(f"Tokenizer: byte tokenizer ready in {t1 - t0:.1f}s, saved config to {config_path}")
+    print(f"Tokenizer: saved token_bytes to {token_bytes_path}")
+    print(f"Tokenizer: sanity check passed (vocab_size={tokenizer.get_vocab_size()})")
+
+
+def train_tokenizer(dataset_name=None, tokenizer_mode=None):
+    mode = _resolve_tokenizer_mode(tokenizer_mode)
+    if mode == "byte":
+        _build_byte_tokenizer(dataset_name)
+        return
+    _train_bpe_tokenizer(dataset_name)
+
+
 # ---------------------------------------------------------------------------
 # Runtime utilities (imported by train.py)
 # ---------------------------------------------------------------------------
@@ -355,28 +443,65 @@ def train_tokenizer(dataset_name=None):
 class Tokenizer:
     """Minimal tokenizer wrapper. Training is handled above."""
 
-    def __init__(self, enc, dataset):
+    def __init__(self, enc, dataset, mode="bpe"):
         self.enc = enc
+        self.mode = mode
         self.dataset = _resolve_dataset_name(dataset)
-        self.bos_token_id = enc.encode_single_token(BOS_TOKEN)
+        if self.mode == "byte":
+            self.bos_token_id = BYTE_VOCAB_SIZE
+            self.vocab_size = BYTE_VOCAB_SIZE + len(SPECIAL_TOKENS)
+        else:
+            self.bos_token_id = enc.encode_single_token(BOS_TOKEN)
+            self.vocab_size = enc.n_vocab
 
     @classmethod
     def from_directory(cls, tokenizer_dir=None, dataset=None):
         dataset_name = _resolve_dataset_name(dataset)
         resolved_dir = tokenizer_dir if tokenizer_dir is not None else _tokenizer_dir(dataset_name)
+        config_path = os.path.join(resolved_dir, TOKENIZER_CONFIG_FILENAME)
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            mode = config.get("mode", "bpe")
+            config_dataset = _resolve_dataset_name(config.get("dataset", dataset_name))
+            if mode == "byte":
+                return cls(enc=None, dataset=config_dataset, mode=mode)
         with open(os.path.join(resolved_dir, "tokenizer.pkl"), "rb") as f:
             enc = pickle.load(f)
-        return cls(enc, dataset=dataset_name)
+        return cls(enc, dataset=dataset_name, mode="bpe")
 
     def get_vocab_size(self):
-        return self.enc.n_vocab
+        return self.vocab_size
 
     def get_bos_token_id(self):
         return self.bos_token_id
 
+    def _resolve_prepend_id(self, prepend):
+        if prepend is None:
+            return None
+        if isinstance(prepend, int):
+            return prepend
+        if prepend == BOS_TOKEN:
+            return self.bos_token_id
+        if self.mode == "bpe":
+            return self.enc.encode_single_token(prepend)
+        raise ValueError(f"Unsupported special token for byte tokenizer: {prepend!r}")
+
     def encode(self, text, prepend=None, num_threads=8):
-        if prepend is not None:
-            prepend_id = prepend if isinstance(prepend, int) else self.enc.encode_single_token(prepend)
+        prepend_id = self._resolve_prepend_id(prepend)
+        if self.mode == "byte":
+            def encode_one(value):
+                ids = list(value.encode("utf-8"))
+                if prepend_id is not None:
+                    ids.insert(0, prepend_id)
+                return ids
+
+            if isinstance(text, str):
+                return encode_one(text)
+            if isinstance(text, list):
+                return [encode_one(item) for item in text]
+            raise ValueError(f"Invalid input type: {type(text)}")
+
         if isinstance(text, str):
             ids = self.enc.encode_ordinary(text)
             if prepend is not None:
@@ -391,6 +516,12 @@ class Tokenizer:
         return ids
 
     def decode(self, ids):
+        if self.mode == "byte":
+            raw = bytes(token_id for token_id in ids if 0 <= token_id < BYTE_VOCAB_SIZE)
+            try:
+                return raw.decode("utf-8")
+            except UnicodeDecodeError:
+                return raw.decode("utf-8", errors="replace")
         return self.enc.decode(ids)
 
 
@@ -545,17 +676,28 @@ if __name__ == "__main__":
             "AUTORESEARCH_DATASET, active_dataset.txt, then default tinystories."
         ),
     )
+    parser.add_argument(
+        "--tokenizer-mode",
+        choices=TOKENIZER_MODE_CHOICES,
+        default="auto",
+        help=(
+            "Tokenizer strategy. 'auto' defaults to a byte tokenizer on Windows for "
+            "stability and to BPE elsewhere."
+        ),
+    )
     args = parser.parse_args()
 
     dataset_name = _resolve_dataset_name(args.dataset)
+    tokenizer_mode = _resolve_tokenizer_mode(args.tokenizer_mode)
 
     print(f"Cache directory: {CACHE_DIR}")
     print(f"Dataset: {dataset_name}")
+    print(f"Tokenizer mode: {tokenizer_mode}")
     print()
 
     download_data(dataset_name)
     print()
-    train_tokenizer(dataset_name)
+    train_tokenizer(dataset_name, tokenizer_mode=tokenizer_mode)
     _set_active_dataset(dataset_name)
     print()
     print(f"Done! Ready to train. Active dataset is now '{dataset_name}'.")

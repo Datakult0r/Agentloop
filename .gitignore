@@ -18,3 +18,7 @@ AGENTS.md
 
 # Experimental code/artifacts
 dev/
+baseline.log
+checkpoint_pre_eval.pt
+results.tsv
+run.log
