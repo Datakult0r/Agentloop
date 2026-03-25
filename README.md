@@ -1,113 +1,145 @@
 # Agentloop
 
-> Convert your gaming PC into an autonomous AI researcher.
+> Turn a single Windows RTX desktop into a small autonomous AI research loop.
 
-> This repository is a fork of [karpathy/autoresearch](https://github.com/karpathy/autoresearch). The purpose of this fork is native support for desktop consumer NVIDIA GPUs on Windows, with tiered VRAM floors by architecture.
+Agentloop is a Windows-friendly fork of [karpathy/autoresearch](https://github.com/karpathy/autoresearch). It is set up so a local agent can edit `train.py`, run a fixed 5-minute training experiment, measure the result, and keep iterating.
 
-> This local `Agentloop` setup was validated on an RTX 4070 12GB and defaults to a Windows-safe byte tokenizer path for reliable first-run setup.
+This repository was validated locally on:
+
+- Windows 11
+- NVIDIA RTX 4070 12 GB
+- Python 3.10.17
+- `uv` 0.7.9
+- PyTorch CUDA 12.8 wheels
+
+On this machine, the reliable first-run path is:
+
+- dataset: `TinyStories`
+- tokenizer: Windows-safe byte tokenizer
+- training budget: 5 minutes per experiment
 
 ![teaser](progress.png)
 
-*One day, frontier AI research used to be done by meat computers in between eating, sleeping, having other fun, and synchronizing once in a while using sound wave interconnect in the ritual of "group meeting". That era is long gone. Research is now entirely the domain of autonomous swarms of AI agents running across compute cluster megastructures in the skies. The agents claim that we are now in the 10,205th generation of the code base, in any case no one could tell if that's right or wrong as the "code" is now a self-modifying binary that has grown beyond human comprehension. This repo is the story of how it all began. -@karpathy, March 2026*.
+## Start here
 
-The idea: give an AI agent a small but real LLM training setup and let it experiment autonomously overnight. It modifies the code, trains for 5 minutes, checks if the result improved, keeps or discards, and repeats. You wake up in the morning to a log of experiments and (hopefully) a better model. The training code here is a simplified single-GPU implementation of [nanochat](https://github.com/karpathy/nanochat). The core idea is that you're not touching any of the Python files like you normally would as a researcher. Instead, you are programming the `program.md` Markdown files that provide context to the AI agents and set up your autonomous research org. The default `program.md` in this repo is intentionally kept as a bare bones baseline, though it's obvious how one would iterate on it over time to find the "research org code" that achieves the fastest research progress, how you'd add more agents to the mix, etc. A bit more context on this project is here in this [tweet](https://x.com/karpathy/status/2029701092347630069).
-
-## Fork scope
-
-- Upstream source: [karpathy/autoresearch](https://github.com/karpathy/autoresearch)
-- Primary objective: run natively on Windows with desktop consumer NVIDIA GPUs (Turing with >=8 GB VRAM, Ampere/Ada/Blackwell with >=10 GB VRAM), without unofficial Triton-on-Windows stacks.
-- Scope of changes: compatibility and stability updates required for that target platform.
-- The original Linux/H100-oriented path from upstream is removed in this fork and is not supported here.
-- If you need the upstream Linux/H100 path, use [karpathy/autoresearch](https://github.com/karpathy/autoresearch).
-
-## How it works
-
-The repo is deliberately kept small and only really has a three files that matter:
-
-- **`prepare.py`** — fixed constants, one-time data prep (downloads TinyStories data, prepares a tokenizer), and runtime utilities (dataloader, evaluation).
-- **`train.py`** — the single file the agent edits. Contains the full GPT model, optimizer (Muon + AdamW), and training loop. Everything is fair game: architecture, hyperparameters, optimizer, batch size, etc. **This file is edited and iterated on by the agent**.
-- **`program.md`** — baseline instructions for one agent. Point your agent here and let it go. **This file is edited and iterated on by the human**.
-
-By design, training runs for a **fixed 5-minute time budget** (wall clock, excluding startup/compilation), regardless of the details of your compute. The metric is **val_bpb** (validation bits per byte) — lower is better, and vocab-size-independent so architectural changes are fairly compared.
-
-## Quick start (PowerShell)
-
-**Requirements:** A single NVIDIA GPU, Python 3.10+, [uv](https://docs.astral.sh/uv/).
-
-- Single runtime path uses PyTorch SDPA attention and eager execution (no FA3/`torch.compile` fast path).
-- Native Windows support targets desktop consumer GPUs with a tiered VRAM policy (Turing >=8 GB, Ampere/Ada/Blackwell >=10 GB), official PyTorch CUDA wheels, and SDPA attention.
-- Default dataset is now TinyStories GPT-4 clean for practical consumer-GPU setup.
+If you want the shortest path from "fresh checkout" to "working run", use these PowerShell scripts:
 
 ```powershell
+.\scripts\setup.ps1
+.\scripts\smoke-test.ps1
+.\scripts\run-once.ps1
+```
 
-# 1. Install uv project manager (if you don't already have it)
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+If you prefer raw commands instead of helper scripts:
 
-# 2. Install dependencies
+```powershell
 uv sync
-
-# 3. Download data and prepare tokenizer (one-time)
-#    Default dataset: TinyStories GPT-4 clean
-#    On Windows, setup defaults to a byte tokenizer for stability.
 uv run prepare.py
-
-# 4. Manually run a single training experiment (~5 min)
+uv run train.py --smoke-test
 uv run train.py
 ```
 
-Quick validation run (recommended after setup):
+The helper scripts print plain-English explanations while they run, so they are a good default if you are coming back to the project cold.
+
+If PowerShell blocks direct script execution on your machine, use:
 
 ```powershell
-uv run train.py --smoke-test
+powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 ```
 
-If the above commands all work ok, your setup is working and you can go into autonomous research mode.
+## What each step is doing
 
-## Running the agent
+- `uv sync`
+  Layman version: this stocks the toolbox. It installs the exact Python packages the repo expects.
+- `uv run prepare.py`
+  Layman version: this downloads the practice text and builds the text-to-number dictionary the model uses.
+- `uv run train.py --smoke-test`
+  Layman version: this is a short engine test. It makes sure the parts are wired together before a full run.
+- `uv run train.py`
+  Layman version: this is one full 5-minute experiment.
 
-Simply spin up your Claude/Codex or whatever you want in this repo (and disable all permissions), then you can prompt something like:
+## Visual map
 
+```mermaid
+flowchart TD
+    A["You start Agentloop"] --> B["setup.ps1 or uv sync"]
+    B --> C["prepare.py downloads TinyStories"]
+    C --> D["prepare.py builds tokenizer"]
+    D --> E["smoke-test checks that training works"]
+    E --> F["train.py runs one 5-minute experiment"]
+    F --> G["validation computes val_bpb"]
+    G --> H["results are logged and compared"]
+    H --> I["agent keeps or discards the change"]
 ```
-Hi have a look at program.md and let's kick off a new experiment! let's do the setup first.
-```
 
-The `program.md` file is essentially a super lightweight "skill".
+## Why this fork exists
 
-## Project structure
+The original upstream project is aimed at a Linux/H100-style workflow. On a normal Windows desktop, the hardest part is usually not the Python itself. The hard part is getting the GPU, PyTorch, CUDA wheels, native extensions, and platform-specific code paths to all agree with each other.
 
-```
-prepare.py      — constants, data prep + runtime utilities (do not modify)
-train.py        — model, optimizer, training loop (agent modifies this)
-program.md      — agent instructions
-pyproject.toml  — dependencies
-```
+In everyday terms, the GPU is the heavy machinery. If the software and the machinery do not agree on the exact handshake, nothing useful happens even if the Python code looks fine. This repo keeps the working path simple on Windows by using official PyTorch CUDA wheels, SDPA attention, and a byte-tokenizer default on Windows.
 
-## Design choices
+## What changed to make this machine work
 
-- **Single file to modify.** The agent only touches `train.py`. This keeps the scope manageable and diffs reviewable.
-- **Fixed time budget.** Training always runs for exactly 5 minutes, regardless of your specific platform. This means you can expect approx 12 experiments/hour and approx 100 experiments while you sleep. There are two upsides of this design decision. First, this makes experiments directly comparable regardless of what the agent changes (model size, batch size, architecture, etc). Second, this means that autoresearch will find the most optimal model for your platform in that time budget. The downside is that your runs (and results) become not comparable to other people running on other compute platforms.
-- **Self-contained.** No external dependencies beyond PyTorch and a few small packages. No distributed training, no complex configs. One GPU, one file, one metric.
+- Switched first-run tokenizer behavior on Windows to `byte` mode for reliability.
+- Kept the dataset on `TinyStories`, which is much more practical for local single-GPU runs.
+- Verified the full flow end to end on an RTX 4070 12 GB.
+- Published the working state to [Datakult0r/Agentloop](https://github.com/Datakult0r/Agentloop).
 
-## Platform support
+## What you give up to fit 12 GB VRAM
 
-This fork's platform policy is explicit and tiered.
+You are not giving up the whole project. You are mostly giving up scale.
 
-| Architecture | Minimum VRAM floor | Supported desktop consumer GPUs |
-| --- | --- | --- |
-| Turing | `>=8 GB` | `RTX 2060 12GB`, `RTX 2060 SUPER 8GB`, `RTX 2070 8GB`, `RTX 2070 SUPER 8GB`, `RTX 2080 8GB`, `RTX 2080 SUPER 8GB`, `RTX 2080 Ti 11GB` |
-| Ampere | `>=10 GB` | `RTX 3060 12GB`, `RTX 3080 10GB`, `RTX 3080 12GB`, `RTX 3080 Ti 12GB`, `RTX 3090 24GB`, `RTX 3090 Ti 24GB` |
-| Ada | `>=10 GB` | `RTX 4060 Ti 16GB`, `RTX 4070 12GB`, `RTX 4070 SUPER 12GB`, `RTX 4070 Ti 12GB`, `RTX 4070 Ti SUPER 16GB`, `RTX 4080 16GB`, `RTX 4080 SUPER 16GB`, `RTX 4090 24GB` |
-| Blackwell | `>=10 GB` | `RTX 5060 Ti 16GB`, `RTX 5070 12GB`, `RTX 5070 Ti 16GB`, `RTX 5080 16GB`, `RTX 5090 32GB` |
-- Desktop only: laptop GPUs are not officially supported due to wide power and thermal variance.
-- Floor policy: Turing desktop GPUs are supported at >=8 GB VRAM; Ampere/Ada/Blackwell desktop GPUs require >=10 GB VRAM.
-- `RTX 2060 6GB` remains out of matrix support due to VRAM floor.
-- Runtime path is intentionally unified across platforms: PyTorch SDPA attention + eager optimizer steps.
-- Runtime adaptation is profile-driven: compute capability, BF16/TF32 support, OS, and VRAM tier determine candidate batch sizes and checkpointing strategy.
-- Supported consumer profiles run a short eager-mode autotune pass and cache the selected candidate per GPU/runtime fingerprint.
-- Autotune env controls: `AUTORESEARCH_DISABLE_AUTOTUNE=1` skips probing; `AUTORESEARCH_AUTOTUNE_REFRESH=1` refreshes the cached decision.
-- Tested hardware in this repo remains RTX 3080 10 GB on Windows. Other listed SKUs are matrix-supported but may be less field-tested here.
-- Non-goals for this fork include FA3/H100-specialized paths, unofficial Triton-for-Windows stacks, AMD/ROCm, Apple Metal, and multi-GPU training.
-- Default dataset is `karpathy/tinystories_gpt4_clean` for consumer-GPU practicality.
+- Smaller model and batch settings mean each experiment sees less work per step.
+- A byte tokenizer is simpler and more robust, but it is less text-efficient than a learned BPE tokenizer.
+- Your local results are still real, but they are tuned for your machine instead of matching a large datacenter baseline.
+
+The upside is that the project is actually runnable, repeatable, and easy to iterate on locally.
+
+## Validated baseline on this machine
+
+The current published baseline was run successfully on this machine with `TinyStories` and the Windows-safe byte tokenizer path.
+
+| Metric | Value |
+| --- | --- |
+| `val_bpb` | `2.269272` |
+| `training_seconds` | `302.8` |
+| `total_seconds` | `471.4` |
+| `peak_vram_mb` | `957.3` |
+| `num_steps` | `49` |
+| `num_params_M` | `26.0` |
+
+That means the working baseline uses well under the 12 GB VRAM limit and leaves room for future experiments.
+
+## Files that matter
+
+- `prepare.py`
+  Fixed constants, one-time data prep, tokenizer prep, dataloader, and evaluation.
+- `train.py`
+  The single file the agent is meant to change during experiments.
+- `program.md`
+  The human-written operating instructions for the agent.
+- `scripts/`
+  Friendly PowerShell wrappers for setup, validation, and a full run.
+- `docs/WINDOWS_OPERATOR_GUIDE.md`
+  A more detailed guide in plain English, including diagrams and practical tradeoffs.
+
+## Daily workflow
+
+1. Open PowerShell in the repo.
+2. Run `.\scripts\status.ps1` to see whether the environment and cache look healthy.
+3. Run `.\scripts\smoke-test.ps1` if you want a quick confidence check.
+4. Run `.\scripts\run-once.ps1` for one full experiment.
+5. If you want the agent to do research loops, point it at `program.md`.
+
+## Detailed guide
+
+For a fuller explanation of what the GPU stack is doing, what the tokenizer change means, and what the 12 GB tradeoffs are, read [docs/WINDOWS_OPERATOR_GUIDE.md](docs/WINDOWS_OPERATOR_GUIDE.md).
+
+## Upstream
+
+- Upstream source: [karpathy/autoresearch](https://github.com/karpathy/autoresearch)
+- This repo focuses on Windows plus consumer RTX practicality.
+- If you want the original Linux/H100-oriented path, use upstream directly.
 
 ## License
 
