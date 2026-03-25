@@ -1,8 +1,10 @@
-# autoresearch
+# Agentloop
 
 > Convert your gaming PC into an autonomous AI researcher.
 
 > This repository is a fork of [karpathy/autoresearch](https://github.com/karpathy/autoresearch). The purpose of this fork is native support for desktop consumer NVIDIA GPUs on Windows, with tiered VRAM floors by architecture.
+
+> This local `Agentloop` setup was validated on an RTX 4070 12GB and defaults to a Windows-safe byte tokenizer path for reliable first-run setup.
 
 ![teaser](progress.png)
 
@@ -22,7 +24,7 @@ The idea: give an AI agent a small but real LLM training setup and let it experi
 
 The repo is deliberately kept small and only really has a three files that matter:
 
-- **`prepare.py`** — fixed constants, one-time data prep (downloads TinyStories data, trains a BPE tokenizer), and runtime utilities (dataloader, evaluation).
+- **`prepare.py`** — fixed constants, one-time data prep (downloads TinyStories data, prepares a tokenizer), and runtime utilities (dataloader, evaluation).
 - **`train.py`** — the single file the agent edits. Contains the full GPT model, optimizer (Muon + AdamW), and training loop. Everything is fair game: architecture, hyperparameters, optimizer, batch size, etc. **This file is edited and iterated on by the agent**.
 - **`program.md`** — baseline instructions for one agent. Point your agent here and let it go. **This file is edited and iterated on by the human**.
 
@@ -44,8 +46,9 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 # 2. Install dependencies
 uv sync
 
-# 3. Download data and train tokenizer (one-time)
+# 3. Download data and prepare tokenizer (one-time)
 #    Default dataset: TinyStories GPT-4 clean
+#    On Windows, setup defaults to a byte tokenizer for stability.
 uv run prepare.py
 
 # 4. Manually run a single training experiment (~5 min)
